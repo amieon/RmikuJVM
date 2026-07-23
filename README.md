@@ -80,7 +80,6 @@ python3 user/build.py riscv64        # 或 loongarch64
 
 ![绝对时间](docs/bench_abs.png)
 
-*线性坐标，上限 12k ms。LoongArch 解释器 `alu_mix` = 42,333 ms（超出图表范围）。*
 
 ### 结论分析
 

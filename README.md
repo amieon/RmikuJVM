@@ -1,0 +1,160 @@
+# RmikuJVM
+
+一个支持装载期 AOT 编译的最小化 JVM，运行在自己写的操作系统 RmikuOS 上（支持 RISC-V 和 LoongArch64 双架构）。
+
+> **一句话**：整数运算比解释器快 50 倍，双架构后端，不依赖任何宿主操作系统直接跑 Java 字节码。
+
+---
+
+## 功能
+
+- **Class 文件解析器**：完整支持常量池、方法表、字段表、异常表
+- **栈机解释器**：约 80 条指令（iadd、imul、goto、invokestatic、invokevirtual、new、数组、ldc、athrow 等）
+- **Mark-Sweep GC**：单核 STW，自适应触发阈值
+- **装载期 AOT**：类加载时把字节码翻译成宿主机器码（无 JIT 预热，热点方法无需回退解释器）
+- **双架构后端**：RISC-V RV64GC 和 LoongArch64 共用同一套翻译器，仅代码生成函数不同
+- **本地方法桥接**：Java `native` 方法通过分发表直接映射到系统调用（print、文件 IO、exit）
+- **裸机友好数据结构**：手写 Treap 替代 std::map，极简 FILE 封装，不依赖 STL
+
+---
+
+## 架构
+
+```
+Java 源码 (.java)
+       |
+   javac（宿主机编译）
+       v
+  字节码 (.class)
+       |
+  +------------------+
+  |  类加载器         |  <-- 解析常量池，解析符号引用
+  +------------------+
+       |
+  +------------------+
+  |  AOT 翻译器       |  <-- 字节码 → RISC-V / LoongArch 机器码
+  +------------------+
+       |
+  +------------------+
+  |  机器码           |  <-- mprotect 改 RX 权限，直接跳转执行
+  +------------------+
+       |
+   RmikuOS 系统调用
+```
+
+---
+
+## 快速开始
+
+### 标准库版（Linux/macOS/Windows，用于开发和调试）
+
+```bash
+g++ -O2 -std=c++17 -Wall classfile.cpp heap.cpp interp.cpp native.cpp main.cpp -o jvm
+./jvm Main.class
+```
+
+标准库版使用 `std::vector`、`std::map`、`std::string`、`fopen`/`fread` 等标准 API，不依赖任何裸机代码，方便在宿主机上验证 JVM 逻辑正确性。
+
+### RmikuOS 裸机版（RISC-V / LoongArch64）
+
+```bash
+# 1. 宿主机编译 Java 测试程序
+python3 user/build.py riscv64        # 或 loongarch64
+
+# 2. 打包进 ext4 根文件系统
+./mkfs_ext4.sh riscv64
+
+# 3. 在 RmikuOS 中执行
+/ $ jvm /jvm/BenchAlu BenchAlu
+```
+
+裸机版使用手写数据结构（Treap、裸 FILE 封装）和直接系统调用，不依赖 glibc。
+
+---
+
+## 性能
+
+所有数据在 RmikuOS 裸机（QEMU）上实测，通过硬件时钟 `rdcycle` / `rdtime.d` 读取真实时间。
+
+### 绝对时间
+
+![绝对时间](docs/bench_abs.png)
+
+*线性坐标，上限 12k ms。LoongArch 解释器 `alu_mix` = 42,333 ms（超出图表范围）。*
+
+### 结论分析
+
+**1. 纯整数运算：AOT 极其成功**
+
+- `alu_mix` **50 倍+** 加速，20M 次循环从 5.4 秒降到 0.1 秒
+- `branch_heavy` **30 倍+** 加速，10M 次分支从 3.6 秒降到 0.1 秒
+- `mul_lcg` **16-18 倍** 加速
+
+这是 AOT 的核心价值：把 `iadd`/`imul`/`ishl`/`goto` 等指令翻译成原生机器码，消除了解释器的 dispatch 开销。
+
+**2. 数组访问：5-6 倍，合理**
+
+瓶颈在内存读写，AOT 后也是 `ld`/`st` 指令，提升有限。
+
+**3. 方法调用、对象、字符串：几乎没提升（1-1.5 倍）**
+
+这是**问题区域**，不是"没提升"，而是 AOT 代码生成有缺陷：
+
+- `static_call`：AOT 后 494ms vs 旧版 811ms，只快 1.6 倍。`invokestatic` 应该翻译成直接 `call` 指令，如果还是走桩函数或解释器 fallback，就会这样。
+- `object_field`：100K 次 `new` + `getfield`/`putfield`，AOT 后 352ms vs 403ms。`new` 指令的 AOT 可能还在调用 `heap.alloc_object`（这个无法避免），但字段访问应该内联成偏移访问。
+- `string_ldc`：1M 次字符串常量加载，AOT 后 628ms vs 753ms。`ldc` 加载字符串常量涉及 `heap.alloc_string`，这是 native 调用，AOT 优化不了。
+
+**4. LoongArch 解释器比 RISC-V 慢 8 倍，AOT 后只慢 8.5 倍**
+
+- 旧版 `alu_mix`：LoongArch 42s vs RISC-V 5.4s（**7.8 倍慢**）
+- 新版 `alu_mix`：LoongArch 865ms vs RISC-V 101ms（**8.5 倍慢**）
+
+AOT 没有缩小差距，说明 LoongArch 的 codegen 后端生成的机器码质量比 RISC-V 差，或者 LoongArch CPU 频率更低。
+
+### 加速比
+
+![加速比](docs/bench_speedup.png)
+
+| 测试项 | RISC-V 加速比 | LoongArch 加速比 | 瓶颈说明 |
+|---|---|---|---|
+| `alu_mix`（位运算） | **53.7 倍** | **48.9 倍** | 解释器取指/译码/分发开销 |
+| `branch_heavy`（分支密集） | **35.5 倍** | **29.2 倍** | 分支预测 + switch 跳转表失效 |
+| `mul_lcg`（乘加） | **17.9 倍** | **15.8 倍** | 整数 ALU |
+| `array_rw`（数组读写） | 4.9 倍 | 5.9 倍 | 内存 load/store（AOT 无法优化） |
+| `static_call`（静态调用） | 1.6 倍 | 1.5 倍 | 方法解析仍走解释路径 |
+| `object_field`（对象字段） | 1.1 倍 | 1.1 倍 | `new` + `getfield` 被分配器主导 |
+| `string_ldc`（字符串常量） | 1.2 倍 | 1.3 倍 | 每次 `ldc` 都调 `alloc_string` |
+
+### 跨架构对比（AOT 模式）
+
+![跨架构](docs/bench_arch.png)
+
+LoongArch64 AOT 在相同 QEMU 主机上比 RISC-V AOT 慢约 8 倍，反映的是代码生成后端质量与指令集特性差异，而非 AOT 本身问题。
+
+---
+
+## 项目结构
+
+```
+user/cpp/jvm/          -- 核心源码（classfile、heap、interp、native、main）
+user/java/             -- Java 测试程序（bench、demo）
+user/include/my/        -- 裸机数据结构（Treap、Vector、String）
+user/lib/               -- 裸机运行时（crt0、syscall、cpp_runtime）
+```
+
+核心源码（`classfile.cpp`、`heap.cpp`、`interp.cpp`）在标准库版和裸机版之间完全共享，仅外围 IO（`native.cpp`、`main.cpp`）和头文件路径不同。
+
+---
+
+## 为什么选装载期 AOT（而不是 JIT）
+
+1. **无预热**：每个方法在首次调用前已编译完成，嵌入式场景延迟可预测。
+2. **无运行时编译器驻留内存**：翻译器本身极小（约 1KB），不占用持久化的 JIT 编译器堆。
+3. **实现简单**：无 OSR、无去优化、无投机内联。单遍模板替换即可。
+4. **双架构友好**：RISC-V 和 LoongArch 后端共用同一套翻译循环，仅 `emit_*` 函数不同。
+
+---
+
+## 许可证
+
+MIT

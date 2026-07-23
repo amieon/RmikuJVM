@@ -1,14 +1,23 @@
 #pragma once
-#include "my/stdcompat.h"
+#include <iostream>
+#include <stdlib.h>
+#include <vector>
+#include <algorithm>
+#include <map>
+
+using int32_t = int;
+using int16_t = short;
+
+
+using uint32_t = unsigned int;
+using uint16_t = unsigned short;
+using uint8_t = unsigned char;
 
 inline void jvm_panic(const char* msg) {
     printf("JVM panic: %s\n", msg);
-    io::exit(1);
+    exit(1);
 }
 
-inline void _exit(int code) {
-    io::exit(code);
-}
 
 template<typename T>
 inline T jvm_max(T a, T b) { return a > b ? a : b; }

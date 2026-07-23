@@ -49,7 +49,8 @@ Java 源码 (.java)
 ### 标准库版（Linux/macOS/Windows，用于开发和调试）
 
 ```bash
-g++ -O2 -std=c++17 -Wall classfile.cpp heap.cpp interp.cpp native.cpp main.cpp -o jvm
+make
+
 ./jvm Main.class
 ```
 

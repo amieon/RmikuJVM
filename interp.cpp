@@ -1,7 +1,7 @@
 #include "interp.h"
 #include "native.h"
 #include "heap.h"
-#include "my/stdcompat.h"
+
 #include "aot.h"
 
 // helpers
@@ -175,7 +175,7 @@ Value VM::exec(Method* m, ClassFile* cf, std::vector<Value> args) {
             } else if (sub == 0x36 || sub == 0x38 || sub == 0x3a) {  // wide istore/fstore/astore
                 uint16_t idx = (uint16_t)((code[f.pc] << 8) | code[f.pc+1]); f.pc += 2;
                 f.locals[idx] = f.stack.back(); f.stack.pop_back();
-            } else { char b[64]; int l=snprintf(b,64,"unimplemented wide opcode 0x%02x\n",sub); write(2,b,l); _exit(1); }
+            } else { printf("unimplemented wide opcode 0x%02x\n",sub);  _exit(1); }
             break; }
         // ----- conversions -----
         case 0x91: { int32_t v=popi(f.stack); pushi(f.stack,(int8_t)v); break; } // i2b
@@ -369,7 +369,7 @@ Value VM::exec(Method* m, ClassFile* cf, std::vector<Value> args) {
         // ----- extended -----
         case 0xc2: case 0xc3: break; // monitorenter/exit (ignored in single-threaded)
         default:
-            { char b[64]; int l=snprintf(b,64,"unimplemented opcode 0x%02x at pc=%u\n",op,opaddr); write(2,b,l); _exit(1); }
+            { printf("unimplemented opcode 0x%02x at pc=%u\n",op,opaddr); _exit(1); }
         }
     }
 }

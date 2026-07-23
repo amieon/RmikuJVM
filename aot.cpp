@@ -9,7 +9,6 @@
 #include "aot.h"
 #include "interp.h"
 #include "heap.h"
-#include "my/stdcompat.h"
 #include "mem.h"
 #include "aot_common.h"
 #if defined(__riscv) && (__riscv_xlen == 64)
